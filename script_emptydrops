@@ -1,0 +1,353 @@
+setwd("/media/csbl/sandbox-SSD-1/fernanda_elias/")
+
+rm(list = ls())
+
+# set random seed for reproducibility
+set.seed(123)
+
+
+# library -----------------------------------------------------------------
+
+library(Seurat)              
+library(SeuratObject)        
+library(DropletUtils)        
+library(scDblFinder)         
+library(SoupX)               
+library(SingleCellExperiment) 
+library(ggplot2)             
+library(patchwork)           
+library(dplyr)
+library(tibble)
+
+# functions ---------------------------------------------------------------
+
+markersFunction <- function(seurat_obj = scdown) {
+  
+  markers_df_filt <- markers_df %>%
+    filter(marker %in% rownames(seurat_obj))
+  
+  auxmark <- markers_df_filt %>%
+    group_by(celltype) %>%
+    summarise(n_markers = n(), .groups = "drop") %>%
+    mutate(celltype = factor(celltype, levels = unique(markers_df_filt$celltype))) %>%
+    arrange(celltype) %>%
+    mutate(
+      y = length(unique(seurat_obj@meta.data$seurat_clusters)) * 1.05,
+      yend = y,
+      x = 1,
+      xend = n_markers,
+      celltype = case_when(
+        celltype == "NPC" ~ "Neural Progenitor Cell",
+        celltype == "Exc" ~ "Excitatory Neuron",
+        celltype == "Inh" ~ "Inhibitory Neuron",
+        celltype == "Inh Striatum" ~ "Inhibitory Neuron (Striatum)",
+        celltype == "Astro P" ~ "Astrocyte Progenitor",
+        celltype == "OPC" ~ "Oligodendrocyte Progenitor",
+        celltype == "Oligo" ~ "Oligodendrocyte",
+        celltype == "Micro" ~ "Microglia",
+        celltype == "Vasc" ~ "Vascular Cell",
+        TRUE ~ as.character(celltype)
+      )
+    ) %>%
+    as.data.frame()
+  
+  for (i in 2:nrow(auxmark)) {
+    auxmark[i, "x"] <- auxmark[i - 1, "xend"] + 1
+    auxmark[i, "xend"] <- auxmark[i, "x"] + auxmark[i, "n_markers"] - 1
+  }
+  
+  dot_plot <- DotPlot(
+    object = seurat_obj,
+    features = markers_df_filt$marker,
+    cols = c("blue", "red"),
+    cluster.idents = TRUE,
+    scale  = TRUE
+  ) +
+    theme(
+      plot.background  = element_rect(fill = "white"),
+      panel.background = element_rect(fill = "white"),
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black"),
+      legend.background = element_rect(fill = "white"),
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 15, face = "bold"),
+      axis.text.y = element_text(size = 17, face = "bold")
+    ) +
+    labs(x = NULL, y = NULL)
+  
+  for (i in 1:nrow(auxmark)) {
+    dot_plot <- dot_plot +
+      annotate(
+        "segment",
+        x    = auxmark[i, "x"],
+        y    = auxmark[i, "y"],
+        xend = auxmark[i, "xend"],
+        yend = auxmark[i, "yend"]
+      ) +
+      annotate(
+        "text",
+        x        = (auxmark[i, "x"] + auxmark[i, "xend"]) / 2,
+        y        = auxmark[i, "y"] + 0.15,
+        label    = auxmark[i, "celltype"],
+        color    = "black",
+        fontface = "bold",
+        size     = 4
+      ) +
+      coord_cartesian(clip = "off")
+  }
+  
+  return(dot_plot)
+}
+
+barfunc <- function(
+    df,
+    x_axis,
+    y_axis,
+    fill_groups     = FALSE,
+    annot_loc       = "center",
+    fill_col        = FALSE,
+    title_name      = NULL,
+    annot_text      = y_axis,
+    size_annot      = 4,
+    size_xaxis_text  = 15,
+    size_xaxis_title = 15,
+    size_yaxis_text  = 15,
+    size_yaxis_title = 15,
+    rotate_x        = 0,
+    x_title         = FALSE,
+    y_title         = FALSE,
+    extra_annot     = NULL
+) {
+  bar_plot <- ggplot(df, aes(x = !!sym(x_axis), y = !!sym(y_axis))) +
+    geom_bar(stat = "identity") +
+    labs(title = title_name, x = x_axis, y = y_axis) +
+    theme_minimal() +
+    scale_y_continuous(expand = c(0, 0)) +
+    theme(
+      plot.background  = element_rect(fill = "white", color = NA),
+      panel.background = element_rect(fill = "white", color = NA),
+      panel.border     = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line        = element_line(color = "black", linewidth = 0.5),
+      axis.title.x     = element_text(face = "bold", size = size_xaxis_title),
+      axis.title.y     = element_text(face = "bold", size = size_yaxis_title),
+      axis.text.y      = element_text(face = "bold", size = size_yaxis_text),
+      axis.text.x      = element_text(
+        face  = "bold",
+        angle = rotate_x,
+        hjust = ifelse(rotate_x != 0, 1, 0.5),
+        size  = size_xaxis_text
+      ),
+      axis.ticks.x = element_blank(),
+      axis.ticks.y = element_line(color = "black", linewidth = 0.5)
+    )
+  
+  if (size_yaxis_text == 0) {
+    bar_plot <- bar_plot + theme(axis.ticks.y = element_blank())
+  }
+  
+  if (!isFALSE(fill_groups)) {
+    bar_plot <- bar_plot +
+      aes(fill = !!sym(fill_groups)) +
+      labs(fill = fill_groups)
+  }
+  
+  if (is.list(fill_col)) {
+    bar_plot <- bar_plot + scale_fill_manual(values = fill_col)
+  } else if (!isFALSE(fill_col)) {
+    bar_plot <- bar_plot +
+      geom_bar(stat = "identity", fill = fill_col) +
+      theme(legend.position = "none")
+  }
+  
+  if (!is.null(extra_annot)) {
+    bar_plot <- bar_plot +
+      annotate(
+        geom  = "text",
+        x     = extra_annot[[x_axis]],
+        y     = extra_annot$y,
+        label = extra_annot$annotation_text,
+        color = extra_annot$color,
+        size  = 3, angle = 90, fontface = "bold"
+      )
+  } else if (annot_loc == "center") {
+    bar_plot <- bar_plot +
+      geom_text(aes(label = !!sym(annot_text)),
+                position = position_stack(vjust = 0.5), size = size_annot)
+  } else if (annot_loc == "repel") {
+    bar_plot <- bar_plot +
+      geom_text_repel(aes(label = !!sym(annot_text)),
+                      direction = "y", size = size_annot)
+  } else if (annot_loc == "top") {
+    y_max <- if (!isFALSE(fill_groups)) {
+      max(df %>%
+            group_by(!!sym(x_axis)) %>%
+            summarise(total = sum(!!sym(y_axis)), .groups = "drop") %>%
+            pull(total))
+    } else {
+      max(df[[y_axis]])
+    }
+    bar_plot <- bar_plot +
+      scale_y_continuous(
+        expand = c(0, 0),
+        limits = c(0, 1.1 * y_max)
+      ) +
+      geom_text(aes(label = !!sym(annot_text)), vjust = -0.2, size = size_annot)
+  }
+  
+  if (!isFALSE(x_title)) bar_plot <- bar_plot + xlab(x_title)
+  if (!isFALSE(y_title)) bar_plot <- bar_plot + ylab(y_title)
+  
+  return(bar_plot)
+}
+
+
+# creating directories ----------------------------------------------------
+
+if (!file.exists("results_thyreoid.v1")) {
+  dir.create("results_thyreoid.v1")
+  dir.create("results_thyreoid.v1/exploratory_analysis")
+}
+
+# load data ------------------------------------------------------------------
+
+runs <- c("GSM8591182_DS3", "GSM8591180_DS1", "GSM8591184_DS5", "GSM8591183_DS4", "GSM8591181_DS2", # Down
+          "GSM8591178_CTL4", "GSM8591179_CTL5", "GSM8591177_CTL3", "GSM8591176_CTL2", "GSM8591175_CTL1") # Euploid
+
+# counts
+counts <- list()
+for (run in runs) {
+  cat("reading:", run, "\n")
+  path <- paste0("/media/csbl/sandbox-SSD-1/fernanda_elias/counts/", run, "/")
+  counts[[run]] <- ReadMtx(
+    mtx = paste0(path, "matrix.mtx.gz"),
+    cells = paste0(path, "barcodes.tsv.gz"),
+    features = paste0(path, "features.tsv.gz"),
+    feature.column = 2,
+    mtx.transpose = FALSE
+  )
+  cat("  Loaded:", nrow(counts[[run]]), "genes x", ncol(counts[[run]]), "droplets\n")
+}
+
+#dim(counts)
+
+
+# emptydrops filtering --------------------------------------------------------------
+
+set.seed(100)
+filtered_counts <- list()
+
+for (run in runs) {
+  cat("\n========================================\n")
+  cat("Processing:", run, "\n")
+  cat("========================================\n")
+  
+# temporary Seurat object 
+  seurat_tmp <- CreateSeuratObject(
+    counts= counts[[run]],
+    project = run,
+    min.cells = 0,
+    min.features = 0
+  )
+
+# brief feedback
+  cat("Total droplets:", ncol(seurat_tmp), "\n")
+  cat("Total genes:", nrow(seurat_tmp), "\n")
+  
+  sparsity <- 1 - (sum(LayerData(seurat_tmp, layer = "counts") > 0) /
+                     (nrow(seurat_tmp) * ncol(seurat_tmp)))
+  cat("Matrix sparsity:", round(sparsity * 100, 1), "%\n")
+  
+umi_counts <- colSums(LayerData(seurat_tmp, layer = "counts"))
+  cat("Median UMI per droplet:", median(umi_counts), "\n")
+  cat("Droplets with >500 UMI:", sum(umi_counts > 500),
+      "(likely cells, will be validated by EmptyDrops)\n")
+
+
+
+sce <- as.SingleCellExperiment(seurat_tmp)
+  
+  empty_results <- emptyDrops(
+    m = counts(sce),
+    lower = 100,
+    niters = 10000,
+    test.ambient = TRUE
+  )
+  
+is_cell <- empty_results$FDR < 0.01
+is_cell[is.na(is_cell)] <- FALSE
+validated_barcodes <- colnames(sce)[is_cell]
+  
+cat("Droplets tested:", ncol(sce), "\n")
+cat("Cells called:", sum(is_cell),
+      "(", round(sum(is_cell) / ncol(sce) * 100, 1), "%)\n")
+cat("Empty droplets removed:", sum(!is_cell),
+      "(", round(sum(!is_cell) / ncol(sce) * 100, 1), "%)\n")
+  
+# plot 
+  empty_df <- data.frame(
+    total_umi = colSums(counts(sce)),
+    is_cell   = is_cell
+  )
+  
+  p1 <- ggplot(empty_df, aes(x = log10(total_umi + 1), fill = is_cell)) +
+    geom_histogram(bins = 50, alpha = 0.7, position = "identity") +
+    scale_fill_manual(
+      values = c("TRUE" = "#2E86AB", "FALSE" = "#A23B72"),
+      labels = c("Cell", "Empty Droplet"),
+      name   = "Classification"
+    ) +
+    labs(
+      title    = paste("EmptyDrops:", run),
+      subtitle = paste(sum(is_cell), "cells called from", ncol(sce), "droplets"),
+      x = "log10(UMI + 1)", y = "Number of Droplets"
+    ) +
+    theme_classic() +
+    theme(plot.title = element_text(face = "bold", size = 14))
+  
+  ggsave(
+    file.path(output_dir, paste0("01_empty_droplets_", run, ".png")),
+    p1, width = 10, height = 6, dpi = 300
+  )
+  
+
+
+filtered_counts[[run]] <- counts[[run]][, is_cell]
+cat("After EmptyDrops:", ncol(filtered_counts[[run]]), "cells retained\n")
+  
+rm(seurat_tmp, sce, empty_results, empty_df, p1, umi_counts, is_cell)
+gc()
+}
+
+# clear
+rm(counts)
+gc()
+
+# separate Seurat objects -------------------------------------------------
+seurats <- list()
+for (run in names(filtered_counts)) {
+  seurats[[run]] <- CreateSeuratObject(
+    counts  = filtered_counts[[run]],
+    project = run,
+    min.cells = 0, 
+    min.features = 0
+  )
+}
+
+rm(filtered_counts)
+gc()
+
+# merging Seurat objects -----------------------------------------------------------------
+scdown <- merge(
+  x = seurats$GSM8591182_DS3,
+  y = seurats[names(seurats) != "GSM8591182_DS3"],
+  add.cell.ids = runs,
+  project = "allRuns"
+)
+
+#clear
+rm(seurats)
+gc()
+
+# joining layers
+scdown <- JoinLayers(scdown)
